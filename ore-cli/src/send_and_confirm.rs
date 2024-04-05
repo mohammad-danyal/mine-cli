@@ -19,7 +19,6 @@ use solana_transaction_status::{TransactionConfirmationStatus, UiTransactionEnco
 use crate::Miner;
 
 use std::thread;
-use std::time::Duration;
 
 const RPC_RETRIES: usize = 1;
 const GATEWAY_RETRIES: usize = 4;
