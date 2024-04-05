@@ -86,7 +86,14 @@ impl Miner {
                                                 .confirmation_status
                                                 .as_ref()
                                                 .unwrap();
-                                            println!("Transaction landed!");
+                                            match current_commitment {
+                                                TransactionConfirmationStatus::Processed => {}
+                                                TransactionConfirmationStatus::Confirmed
+                                                | TransactionConfirmationStatus::Finalized => {
+                                                    println!("Transaction landed!");
+                                                    return Ok(sig);
+                                                }
+                                            }
                                             return Ok(sig);
                                         } else {
                                             println!("No status");
