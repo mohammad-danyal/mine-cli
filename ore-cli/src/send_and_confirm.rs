@@ -57,20 +57,7 @@ impl Miner {
             max_retries: Some(RPC_RETRIES),
             min_context_slot: Some(slot),
         };
-         // Add priority fee directly into the transaction
-        let mut tx = Transaction::new_with_payer(ixs.to_vec(), Some(&signer.pubkey()));
-
-        // Adjust the amount being transferred by adding the priority fee
-        let lamports_with_priority_fee = 50000 ; // Example amount with priority fee
-        let ix_with_priority_fee = system_instruction::transfer(
-            &signer.pubkey(), // Sender pubkey
-            &Pubkey::new_unique(), // Receiver pubkey (you need to specify the correct receiver)
-            lamports_with_priority_fee, // Amount with priority fee
-        );
-
-        tx.message.instructions.push(ix_with_priority_fee);
-
-        // Sign transaction
+        let mut tx = Transaction::new_with_payer(ixs, Some(&signer.pubkey()));
         tx.sign(&[&signer], hash);
 
         // Submit tx
@@ -100,9 +87,7 @@ impl Miner {
                                                 .as_ref()
                                                 .unwrap();
                                             match current_commitment {
-                                                TransactionConfirmationStatus::Processed => {}
-                                                TransactionConfirmationStatus::Confirmed
-                                                | TransactionConfirmationStatus::Finalized => {
+                                                TransactionConfirmationStatus::Processed => {
                                                     println!("Transaction landed!");
                                                     return Ok(sig);
                                                 }
