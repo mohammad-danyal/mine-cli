@@ -61,13 +61,13 @@ impl Miner {
         let mut tx = Transaction::new_with_payer(ixs.to_vec(), Some(&signer.pubkey()));
 
         // Adjust the amount being transferred by adding the priority fee
-        let lamports_with_priority_fee = 10000000 + priority_fee_lamports; // Example amount with priority fee
+        let lamports_with_priority_fee = 50000 ; // Example amount with priority fee
         let ix_with_priority_fee = system_instruction::transfer(
             &signer.pubkey(), // Sender pubkey
             &Pubkey::new_unique(), // Receiver pubkey (you need to specify the correct receiver)
             lamports_with_priority_fee, // Amount with priority fee
         );
-        
+
         tx.message.instructions.push(ix_with_priority_fee);
 
         // Sign transaction
