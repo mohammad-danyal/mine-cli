@@ -70,7 +70,8 @@ impl Miner {
                     sigs.push(sig);
                     println!("{:?}", sig);
 
-                    
+                    thread::sleep(Duration::from_millis(10000));
+
                     return Ok(sig);
                     
                     for _ in 0..CONFIRM_RETRIES {
