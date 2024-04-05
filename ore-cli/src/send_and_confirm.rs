@@ -70,10 +70,9 @@ impl Miner {
                     sigs.push(sig);
                     println!("{:?}", sig);
 
-                    // Confirm tx
-                    if skip_confirm {
-                        return Ok(sig);
-                    }
+                    
+                    return Ok(sig);
+                    
                     for _ in 0..CONFIRM_RETRIES {
                         std::thread::sleep(Duration::from_millis(2000));
                         match client.get_signature_statuses(&sigs).await {
@@ -94,7 +93,6 @@ impl Miner {
                                                     return Ok(sig);
                                                 }
                                             }
-                                            return Ok(sig);
                                         } else {
                                             println!("No status");
                                         }
