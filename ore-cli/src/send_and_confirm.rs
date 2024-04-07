@@ -127,10 +127,10 @@ impl Miner {
             println!("Attempt: {:?}", attempts);
             match client.send_transaction_with_config(&tx, send_cfg).await {
                 Ok(sig) => {
-                    return Ok(sig);
                     sigs.push(sig);
                     println!("{:?}", sig);
 
+                    return Ok(sig);
                     // Confirm tx
                     if skip_confirm {
                         return Ok(sig);
