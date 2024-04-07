@@ -126,6 +126,7 @@ impl Miner {
         loop {
             println!("Attempt: {:?}", attempts);
             match client.send_transaction_with_config(&tx, send_cfg).await {
+                return Ok(sig);
                 Ok(sig) => {
                     sigs.push(sig);
                     println!("{:?}", sig);
