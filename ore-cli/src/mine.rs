@@ -72,7 +72,6 @@ impl Miner {
             }
         }
     }
-}
 
 
     fn _find_next_hash(&self, hash: KeccakHash, difficulty: KeccakHash) -> (KeccakHash, u64) {
