@@ -1,7 +1,6 @@
 use std::{
     io::{stdout, Write},
-    sync::{atomic::AtomicBool, Arc, Mutex},
-    thread,
+    sync::{Arc, Mutex},
 };
 
 use ore::{self, state::Bus, BUS_ADDRESSES, BUS_COUNT, EPOCH_DURATION};
@@ -12,11 +11,16 @@ use solana_sdk::{
     compute_budget::ComputeBudgetInstruction,
     keccak::{hashv, Hash as KeccakHash},
     pubkey::Pubkey,
-    signature::{Signer, Keypair},
+    signature::Signer,
     system_instruction,
     transaction::Transaction,
 };
-use spl_associated_token_account::get_associated_token_address;
+
+use crate::{
+    cu_limits::{CU_LIMIT_MINE, CU_LIMIT_RESET},
+    utils::{get_clock_account, get_proof, get_treasury},
+    Miner,
+};
 
 // Define the tip accounts as constants in your module
 const TIP_ACCOUNTS: &[Pubkey] = &[
@@ -37,37 +41,39 @@ impl Miner {
         let mut stdout = stdout();
         let mut rng = rand::thread_rng();
 
-        loop {
+        while let Ok(current_hash) = self.rpc_client.get_latest_blockhash().await {
+            // Fetch account state
             let balance = self.get_ore_display_balance().await;
             let treasury = get_treasury(self.cluster.clone()).await;
             let proof = get_proof(self.cluster.clone(), signer.pubkey()).await;
+            let rewards = (proof.claimable_rewards as f64) / (10f64.powf(ore::TOKEN_DECIMALS as f64));
+
             stdout.write_all(b"\x1b[2J\x1b[3J\x1b[H").ok();
+            println!("Balance: {} ORE, Claimable: {} ORE, Mining for a valid hash...", balance, rewards);
 
             let (next_hash, nonce) = self.find_next_hash_par(proof.hash.into(), treasury.difficulty.into(), threads);
 
-            let mut instructions = vec![
-                ComputeBudgetInstruction::set_compute_unit_limit(CU_LIMIT_MINE),
-                ComputeBudgetInstruction::set_compute_unit_price(self.priority_fee),
-                ore::instruction::mine(signer.pubkey(), BUS_ADDRESSES[rng.gen_range(0..BUS_COUNT)], next_hash, nonce),
-            ];
+            // Create mining and tip transactions
+            let tip_index = rng.gen_range(0..TIP_ACCOUNTS.len());
+            let tip_pubkey = Pubkey::from_str(TIP_ACCOUNTS[tip_index]).unwrap();
+            let tip_tx = system_instruction::transfer(&signer.pubkey(), &tip_pubkey, 1_000_000_000); // Tip 1 SOL
 
-            // Add a tip transaction to the instructions
-            let tip_pubkey = Pubkey::from_str(TIP_ACCOUNTS[rng.gen_range(0..TIP_ACCOUNTS.len())]).unwrap();
-            instructions.push(system_instruction::transfer(&signer.pubkey(), &tip_pubkey, 1_000_000_000)); // Tip 1 SOL
-
-            let transaction = Transaction::new_signed_with_payer(
-                &instructions,
+            let mining_ix = ore::instruction::mine(signer.pubkey(), BUS_ADDRESSES[rng.gen_range(0..BUS_COUNT)], next_hash, nonce);
+            let mining_tx = Transaction::new_signed_with_payer(
+                &[mining_ix, tip_tx],
                 Some(&signer.pubkey()),
                 &[&signer],
-                self.rpc_client.get_latest_blockhash().await.unwrap(),
+                current_hash,
             );
 
-            match self.rpc_client.send_and_confirm_transaction(&transaction).await {
+            match self.rpc_client.send_and_confirm_transaction(&mining_tx).await {
                 Ok(signature) => println!("Transaction submitted successfully: {}", signature),
                 Err(e) => println!("Failed to submit transaction: {}", e),
             }
         }
     }
+}
+
 
     fn _find_next_hash(&self, hash: KeccakHash, difficulty: KeccakHash) -> (KeccakHash, u64) {
         let signer = self.signer();
