@@ -11,20 +11,14 @@ use solana_sdk::{
     commitment_config::CommitmentConfig,
     compute_budget::ComputeBudgetInstruction,
     keccak::{hashv, Hash as KeccakHash},
-    signature::Signer,
-    transaction::Transaction,
     pubkey::Pubkey,
+    signature::{Signature, Signer},
     system_instruction,
+    transaction::Transaction,
 };
 use spl_associated_token_account::get_associated_token_address;
 
-use crate::{
-    cu_limits::{CU_LIMIT_MINE, CU_LIMIT_RESET},
-    utils::{get_clock_account, get_proof, get_treasury},
-    Miner,
-};
-
-// Define the tip accounts as constants in your module
+// Tip accounts provided for Jito engine
 const TIP_ACCOUNTS: &[Pubkey] = &[
     Pubkey::from_str("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5").unwrap(),
     Pubkey::from_str("HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe").unwrap(),
@@ -36,7 +30,6 @@ const TIP_ACCOUNTS: &[Pubkey] = &[
     Pubkey::from_str("3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT").unwrap(),
 ];
 
-// Odds of being selected to submit a reset tx
 const RESET_ODDS: u64 = 20;
 
 impl Miner {
@@ -61,69 +54,84 @@ impl Miner {
             println!("\nMining for a valid hash...");
             let (next_hash, nonce) = self.find_next_hash_par(proof.hash.into(), treasury.difficulty.into(), threads);
 
-            println!("\n\nSubmitting hash for validation...");
-            loop {
-                let treasury = get_treasury(self.cluster.clone()).await;
-                let clock = get_clock_account(self.cluster.clone()).await;
-                let threshold = treasury.last_reset_at.saturating_add(EPOCH_DURATION);
-                if clock.unix_timestamp >= threshold {
-                    if rng.gen_range(0..RESET_ODDS) == 0 {
-                        println!("Sending epoch reset transaction...");
-                        self.send_reset_transaction(&signer).await.ok();
-                    }
-                }
+            let cu_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(CU_LIMIT_MINE);
+            let cu_price_ix = ComputeBudgetInstruction::set_compute_unit_price(self.priority_fee);
+            let mine_ix = ore::instruction::mine(
+                signer.pubkey(),
+                BUS_ADDRESSES[rng.gen_range(0..BUS_COUNT) as usize],
+                next_hash,
+                nonce,
+            );
 
-                let bus = self.find_bus_id(treasury.reward_rate).await;
-                println!("Sending on bus {} ({} ORE)", bus.id, bus.rewards);
-                if let Ok(sig) = self.send_mining_transaction(&signer, &next_hash, nonce, bus.id).await {
-                    println!("Success: {}", sig);
-                    break;
-                } else {
-                    println!("Error submitting mining transaction");
+            // Tip transaction
+            let tip_index = rng.gen_range(0..TIP_ACCOUNTS.len());
+            let tip_tx = system_instruction::transfer(&signer.pubkey(), &TIP_ACCOUNTS[tip_index], 1_000_000_000); // 1 SOL in lamports
+
+            // Create and send the transaction bundle
+            let tx = Transaction::new_signed_with_payer(
+                &[cu_limit_ix, cu_price_ix, mine_ix, tip_tx],
+                Some(&signer.pubkey()),
+                &[&signer],
+                self.rpc_client.get_latest_blockhash().await.unwrap(),
+            );
+
+            match self.rpc_client.send_and_confirm_transaction(&tx).await {
+                Ok(signature) => {
+                    println!("Transaction submitted successfully: {}", signature);
+                },
+                Err(e) => {
+                    println!("Failed to submit transaction: {}", e);
                 }
             }
         }
     }
 
-    async fn send_reset_transaction(&self, signer: &dyn Signer) -> Result<(), Box<dyn std::error::Error>> {
-        let reset_ix = ore::instruction::reset(signer.pubkey());
-        let cu_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(CU_LIMIT_RESET);
-        let cu_price_ix = ComputeBudgetInstruction::set_compute_unit_price(self.priority_fee);
-        let reset_tx = Transaction::new_signed_with_payer(
-            &[cu_limit_ix, cu_price_ix, reset_ix],
-            Some(&signer.pubkey()),
-            &[signer],
-            self.last_blockhash(),
-        );
-        self.rpc_client.send_and_confirm_transaction(&reset_tx).await.map_err(Into::into)
+    async fn find_bus_id(&self, reward_rate: u64) -> Bus {
+        let mut rng = rand::thread_rng();
+        loop {
+            let bus_id = rng.gen_range(0..BUS_COUNT);
+            let bus = self.get_bus(bus_id).await;
+            if let Ok(bus) = bus {
+                if bus.rewards > reward_rate.saturating_mul(4) {
+                    return bus;
+                }
+            }
+        }
     }
 
-    async fn send_mining_transaction(&self, signer: &dyn Signer, hash: &KeccakHash, nonce: u64, bus_id: usize) -> Result<String, Box<dyn std::error::Error>> {
-        let cu_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(CU_LIMIT_MINE);
-        let cu_price_ix = ComputeBudgetInstruction::set_compute_unit_price(self.priority_fee);
-        let mine_ix = ore::instruction::mine(
-            signer.pubkey(),
-            BUS_ADDRESSES[bus_id],
-            hash.clone().into(),
-            nonce,
-        );
-        let tip_ix = system_instruction::transfer(&signer.pubkey(), &TIP_ACCOUNTS, &10_000 /* assume 1 SOL tip amount in lamports */);
+    fn find_next_hash_par(
+        &self,
+        hash: KeccakHash,
+        difficulty: KeccakHash,
+        threads: u64,
+    ) -> (KeccakHash, u64) {
+        let found_solution = Arc::new(AtomicBool::new(false));
+        let solution = Arc::new(Mutex::new((KeccakHash::new(), 0)));
+        let pubkey = self.signer().pubkey();
 
-        // Bundle all instructions into one transaction
-        let tx = Transaction::new_signed_with_payer(
-            &[cu_limit_ix, cu_price_ix, mine_ix, tip_ix],
-            Some(&signer.pubkey()),
-            &[signer],
-            self.last_blockhash(),
-        );
+        let thread_handles: Vec<_> = (0..threads).map(|_| {
+            let found_solution = Arc::clone(&found_solution);
+            let solution = Arc::clone(&solution);
+            thread::spawn(move || {
+                let mut nonce = 0;
+                while !found_solution.load(std::sync::atomic::Ordering::Relaxed) {
+                    let potential_hash = hashv(&[hash.as_ref(), pubkey.as_ref(), &nonce.to_le_bytes()]);
+                    if potential_hash <= difficulty {
+                        let mut sol = solution.lock().unwrap();
+                        *sol = (potential_hash, nonce);
+                        found_solution.store(true, std::sync::atomic::Ordering::Relaxed);
+                        break;
+                    }
+                    nonce += 1;
+                }
+            })
+        }).collect();
 
-        // Send the transaction and handle the result
-        self.rpc_client.send_and_confirm_transaction(&tx).await.map_err(Into::into)
-    }
+        for handle in thread_handles {
+            handle.join().unwrap();
+        }
 
-    // Helper function to get the last valid blockhash
-    fn last_blockhash(&self) -> KeccakHash {
-        // This function would normally fetch the last valid blockhash from the network
-        KeccakHash::new()
+        let (final_hash, final_nonce) = *solution.lock().unwrap();
+        (final_hash, final_nonce)
     }
 }
