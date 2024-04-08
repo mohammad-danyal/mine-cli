@@ -103,9 +103,16 @@ async fn simulate_transaction(client: &RpcClient, tx: &mut Transaction, sim_atte
                 *sim_attempts += 1;
                 if *sim_attempts >= SIMULATION_RETRIES {
                     return Err(ClientError {
-                       Here's how you can further enhance the error handling and simulation in your Rust code for Solana transaction submission:
+                        request: None,
+                        kind: ClientErrorKind::Custom("Simulation repeatedly failed".into()),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
-```rust
 async fn simulate_transaction(client: &RpcClient, tx: &mut Transaction, sim_attempts: &mut usize) -> ClientResult<()> {
     while *sim_attempts < SIMULATION_RETRIES {
         let sim_res = client
