@@ -69,6 +69,26 @@ impl Miner {
         }
     }
 
+    fn _find_next_hash(&self, hash: KeccakHash, difficulty: KeccakHash) -> (KeccakHash, u64) {
+        let signer = self.signer();
+        let mut next_hash: KeccakHash;
+        let mut nonce = 0u64;
+        loop {
+            next_hash = hashv(&[
+                hash.to_bytes().as_slice(),
+                signer.pubkey().to_bytes().as_slice(),
+                nonce.to_le_bytes().as_slice(),
+            ]);
+            if next_hash.le(&difficulty) {
+                break;
+            } else {
+                println!("Invalid hash: {} Nonce: {:?}", next_hash.to_string(), nonce);
+            }
+            nonce += 1;
+        }
+        (next_hash, nonce)
+    }
+
     fn find_next_hash_par(
         &self,
         hash: KeccakHash,
@@ -76,44 +96,81 @@ impl Miner {
         threads: u64,
     ) -> (KeccakHash, u64) {
         let found_solution = Arc::new(AtomicBool::new(false));
-        let solution = Arc::new(Mutex::new((KeccakHash::new(), 0)));
-        let pubkey = self.signer().pubkey();
-
-        let thread_handles: Vec<_> = (0..threads).map(|_| {
-            let found_solution = Arc::clone(&found_solution);
-            let solution = Arc::clone(&solution);
-            thread::spawn(move || {
-                let mut nonce = 0;
-                while !found_solution.load(std::sync::atomic::Ordering::Relaxed) {
-                    let potential_hash = hashv(&[hash.as_ref(), pubkey.as_ref(), &nonce.to_le_bytes()]);
-                    if potential_hash <= difficulty {
-                        let mut sol = solution.lock().unwrap();
-                        *sol = (potential_hash, nonce);
-                        found_solution.store(true, std::sync::atomic::Ordering::Relaxed);
-                        break;
+        let solution = Arc::new(Mutex::<(KeccakHash, u64)>::new((
+            KeccakHash::new_from_array([0; 32]),
+            0,
+        )));
+        let signer = self.signer();
+        let pubkey = signer.pubkey();
+        let thread_handles: Vec<_> = (0..threads)
+            .map(|i| {
+                std::thread::spawn({
+                    let found_solution = found_solution.clone();
+                    let solution = solution.clone();
+                    let mut stdout = stdout();
+                    move || {
+                        let n = u64::MAX.saturating_div(threads).saturating_mul(i);
+                        let mut next_hash: KeccakHash;
+                        let mut nonce: u64 = n;
+                        loop {
+                            next_hash = hashv(&[
+                                hash.to_bytes().as_slice(),
+                                pubkey.to_bytes().as_slice(),
+                                nonce.to_le_bytes().as_slice(),
+                            ]);
+                            if nonce % 10_000 == 0 {
+                                if found_solution.load(std::sync::atomic::Ordering::Relaxed) {
+                                    return;
+                                }
+                                if n == 0 {
+                                    stdout
+                                        .write_all(
+                                            format!("\r{}", next_hash.to_string()).as_bytes(),
+                                        )
+                                        .ok();
+                                }
+                            }
+                            if next_hash.le(&difficulty) {
+                                stdout
+                                    .write_all(format!("\r{}", next_hash.to_string()).as_bytes())
+                                    .ok();
+                                found_solution.store(true, std::sync::atomic::Ordering::Relaxed);
+                                let mut w_solution = solution.lock().expect("failed to lock mutex");
+                                *w_solution = (next_hash, nonce);
+                                return;
+                            }
+                            nonce += 1;
+                        }
                     }
-                    nonce += 1;
-                }
+                })
             })
-        }).collect();
+            .collect();
 
-        for handle in thread_handles {
-            handle.join().unwrap();
+        for thread_handle in thread_handles {
+            thread_handle.join().unwrap();
         }
 
-        let (final_hash, final_nonce) = *solution.lock().unwrap();
-        (final_hash, final_nonce).unwrap();
-        (final_hash, final_nonce)
+        let r_solution = solution.lock().expect("Failed to get lock");
+        *r_solution
     }
 
     pub async fn get_ore_display_balance(&self) -> String {
-        let client = RpcClient::new_with_commitment(self.cluster.clone(), CommitmentConfig::confirmed());
+        let client =
+            RpcClient::new_with_commitment(self.cluster.clone(), CommitmentConfig::confirmed());
         let signer = self.signer();
-        let token_account_address = get_associated_token_address(&signer.pubkey(), &ore::MINT_ADDRESS);
-        
+        let token_account_address = spl_associated_token_account::get_associated_token_address(
+            &signer.pubkey(),
+            &ore::MINT_ADDRESS,
+        );
         match client.get_token_account(&token_account_address).await {
-            Ok(token_account) => token_account.token_amount.ui_amount_string,
-            Err(_) => "Error fetching balance".to_string(),
+            Ok(token_account) => {
+                if let Some(token_account) = token_account {
+                    token_account.token_amount.ui_amount_string
+                } else {
+                    "0.00".to_string()
+                }
+            }
+            Err(_) => "Err".to_string(),
         }
     }
 }
